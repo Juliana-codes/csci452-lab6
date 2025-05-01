@@ -1,0 +1,521 @@
+---
+title: "Lab 7: Support Vector Machines"
+author: "Juliana Vinluan"
+date: "2025-04-22"
+output:
+  html_document:
+    code_folding: show
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction Questions
+
+Briefly describe the problem the authors are trying to solve.
+	•	How many predictor variables were used?
+	•	What was the ratio of training data to test data?
+	•	What kernels did the authors evaluate and how did they tune them?
+	•	Although overall accuracy was similar in several of the kernels, the linear 
+  kernel was strongly preferred. Why?
+
+- The authors are addressing the problem of predicting the purchase of sessions 
+in a web store, by exploring the use of SVMs specifically to predict 
+customer purchasing behavior online.
+- 23 Variables were used
+- 26,000 : 13,000
+- The authors evaluated three kernels: linear, polynomial, radial and sigmoid.
+- The error rate was the lowest by far for the linear kernel and it was most effective as stated by the authors.
+
+### Load the Vehicle dataset
+
+```{r load-packages}
+# Load
+library(mlbench)
+library(e1071)
+library(caret) # For splitting
+library(dplyr) # Data manipulation
+
+# Load the Vehicle data
+data(Vehicle)
+
+# Look at the data
+str(Vehicle)
+summary(Vehicle)
+sum(is.na(Vehicle)) #tells us about missing values
+
+```
+
+## Step 1 : Preprocessing the Data
+1. Load the Vehicle dataset from the mlbench package.
+2. Check for missing values.
+3. Check the structure of the data.
+4. Applied standardization (scale()) to predictor variables.
+5. Put the standardized predictors together with the original Class label into vehicle_processed.
+```{r scale-factors}
+# Save the target variable
+vehicle_target <- Vehicle$Class
+
+# Scale predictors
+vehicle_scaled <- scale(Vehicle %>% select(-Class))
+
+# Recombine predictors + target
+vehicle_processed <- data.frame(vehicle_scaled, Class = vehicle_target)
+
+# Check result
+head(vehicle_processed)
+
+```
+
+## Step 2: Splitting the Data
+1. Used createDataPartition() from the caret package to create five different random training/test splits.
+2. Each split uses approximately 70% of the data for training and 30% for testing.
+```{r }
+set.seed(123)  # Set a seed for reproducibility
+
+# Create empty lists to hold training and testing sets
+train_list <- list()
+test_list <- list()
+
+# Create 5 different splits
+for (i in 1:5) {
+  # Make indices for 70% training
+  train_indices <- createDataPartition(vehicle_processed$Class, p = 0.7, list = FALSE)
+  
+  # Split the data
+  train_data <- vehicle_processed[train_indices, ]
+  test_data <- vehicle_processed[-train_indices, ]
+  
+  # Save them
+  train_list[[i]] <- train_data
+  test_list[[i]] <- test_data
+}
+
+```
+
+```{r check}
+# Check sizes
+sapply(train_list, nrow)
+sapply(test_list, nrow)
+
+# Should be about 70% and 30% of the full dataset (846 rows total)
+nrow(vehicle_processed)  # Should be 846
+```
+
+## Step 3: Training the Models
+1. Split using 70% of the data for training and 30% for testing.
+2. Save splits into train_list and test_list to be used later.
+```{r train-models}
+# Create empty lists to hold models
+# Create empty lists to hold models separately by kernel
+svm_models_linear <- list()
+svm_models_poly <- list()
+svm_models_rbf <- list()
+
+# Train models for each split
+for (i in 1:5) {
+  train_data <- train_list[[i]]
+  
+  svm_models_linear[[i]] <- svm(Class ~ ., data = train_data, kernel = "linear")
+  svm_models_poly[[i]] <- svm(Class ~ ., data = train_data, kernel = "polynomial")
+  svm_models_rbf[[i]] <- svm(Class ~ ., data = train_data, kernel = "radial")
+}
+
+```
+
+## Step 4: Evaluating the Models
+1. For each of the five train/test splits:
+  - Train three SVM models with different kernels:
+        -linear
+        -polynomial
+        -radial
+2. predict the corresponding test set.
+3. Measure test set accuracy for each model and store the results in a table
+```{r evaluate-models}
+# Create a results data frame
+results <- data.frame(
+  Split = integer(),
+  Kernel = character(),
+  Accuracy = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Train and evaluate models for each split
+for (i in 1:5) {
+  train_data <- train_list[[i]]
+  test_data <- test_list[[i]]
+  
+  # Train models
+  svm_linear <- svm(Class ~ ., data = train_data, kernel = "linear")
+  svm_poly <- svm(Class ~ ., data = train_data, kernel = "polynomial")
+  svm_rbf <- svm(Class ~ ., data = train_data, kernel = "radial")
+  
+  # Make predictions
+  pred_linear <- predict(svm_linear, newdata = test_data)
+  pred_poly <- predict(svm_poly, newdata = test_data)
+  pred_rbf <- predict(svm_rbf, newdata = test_data)
+  
+  # Calculate accuracies
+  acc_linear <- mean(pred_linear == test_data$Class)
+  acc_poly <- mean(pred_poly == test_data$Class)
+  acc_rbf <- mean(pred_rbf == test_data$Class)
+  
+  # Save results
+  results <- rbind(results, data.frame(Split = i, Kernel = "Linear", Accuracy = acc_linear))
+  results <- rbind(results, data.frame(Split = i, Kernel = "Polynomial", Accuracy = acc_poly))
+  results <- rbind(results, data.frame(Split = i, Kernel = "RBF", Accuracy = acc_rbf))
+}
+
+# Print the results
+print(results)
+```
+
+### Observations
+Linear kernel is consistently the highest or very close to the highest accuracy across most splits.
+
+RBF sometimes gets close (especially on Split 3 where it barely beats linear), but overall is less consistent.
+
+Polynomial is consistently lower than both Linear and RBF.
+
+Best choice: Linear kernel
+
+## Step 5 : Tune the kernel
+1. Tune the linear kernel using the tune() function.
+2. Explore cost values: 0.001, 0.01, 0.1, 1, 10, 100.
+```{r tune-kernel}
+# Choose one training set (e.g., first split)
+train_data <- train_list[[1]]
+
+# Tune the cost parameter
+set.seed(123)  # Set seed for reproducibility
+
+tune_out <- tune(
+  svm,
+  Class ~ .,
+  data = train_data,
+  kernel = "linear",
+  ranges = list(cost = c(0.001, 0.01, 0.1, 1, 10, 100))
+)
+
+# View the tuning results
+summary(tune_out)
+```
+### Results from tuning:
+Best cost: 1
+
+Best performance aka the lowest cross-validation error: ~0.1987 (about 19.87% error)
+
+So... ~80.13% correct classification inside training cross-validation
+
+Cost = 1 was better than very small (0.001, 0.01) or very large (100) cost values.
+
+## Step 6: Final Model Evaluation
+Using the tuned parameter (cost = 1), train the final linear SVM model
+
+
+```{r final-evaluation}
+# Create a final results data frame
+final_results <- data.frame(
+  Split = integer(),
+  Accuracy = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Final evaluation across all 5 splits
+for (i in 1:5) {
+  train_data <- train_list[[i]]
+  test_data <- test_list[[i]]
+  
+  # Train SVM with cost = 1
+  svm_final <- svm(Class ~ ., data = train_data, kernel = "linear", cost = 1)
+  
+  # Predict on test set
+  predictions <- predict(svm_final, newdata = test_data)
+  
+  # Accuracy
+  acc <- mean(predictions == test_data$Class)
+  
+  # Save results
+  final_results <- rbind(final_results, data.frame(Split = i, Accuracy = acc))
+}
+
+# View final results
+print(final_results)
+```
+### Results
+The final test set accuracies for each split were:
+The models achieved consistently strong performance across 
+all splits, with accuracies ranging from 74% to 80%.
+
+The average accuracy across all splits was approximately 78%.
+
+This suggests that the linear SVM with cost = 1 provides a stable 
+and effective classification model for the Vehicle dataset.
+
+## Conclusion
+I applied Support Vector Machines (SVMs) to the Vehicle dataset to predict vehicle types based
+on various measured attributes. I preprocessed data ad created 5 training/test splits. I selected
+the linear kernel as the best.
+
+By tuning the linear SVM's cost parameter, I selected cost = 1 as the best value. Using the
+tuned model, final test set accuracies ranged from approximately 74% to 80%, with an average final
+accuracy around 78%.
+
+These results show that the linear SVM performed effectively on the Vehicle dataset, suggesting
+that the underlying feature space is relatively linearly separable. Overall, the linear SVM
+provided stable and reliable classification for this problem.
+
+# Higher Education dataset
+Load the Higher Education dataset (UCI Machine Learning Repository)
+```{r higher-education}
+# Load the Higher Education dataset
+# Load libraries (again, just in case)
+library(e1071)
+library(caret)
+library(dplyr)
+
+# Load your dataset
+# Adjust the file path to where your CSV is saved
+edu_data <- read.csv("student-data.csv")
+
+# View the structure of the data
+str(edu_data)
+summary(edu_data)
+sum(is.na(edu_data)) # Check for missing values, we want 0 
+
+# Remove the STUDENT.ID column because it's not useful for prediction
+edu_data <- edu_data %>% select(-STUDENT.ID)
+
+```
+
+## Step 1: Data Examination and Preprocessing
+```{r edu-preprocess}
+# Suppose the target column is called "Output.grade"
+# Rename if needed to remove spaces
+colnames(edu_data) <- make.names(colnames(edu_data))
+
+# Separate predictors and target
+edu_target <- edu_data$GRADE
+
+# Remove target from predictors
+edu_predictors <- edu_data %>% select(-GRADE)
+
+# Identify numeric columns
+numeric_columns <- sapply(edu_predictors, is.numeric)
+
+# Scale only numeric columns
+edu_predictors_scaled <- edu_predictors
+edu_predictors_scaled[, numeric_columns] <- scale(edu_predictors[, numeric_columns])
+
+# Combine back predictors + target
+edu_processed <- data.frame(edu_predictors_scaled, GRADE = edu_target)
+edu_processed$GRADE <- as.factor(edu_processed$GRADE)
+
+
+# Quick view
+head(edu_processed)
+```
+
+### Step 1: Data Loading and Preprocessing (Higher Education Dataset)
+1. Loaded the Higher Education Students Performance Evaluation dataset from CSV.
+2. Renamed columns to valid R variable names using make.names().
+3. Selected "GRADE" as the target variable for prediction.
+(There were no missing values)
+4. Processed predictors
+
+## Step 2: Splitting the Data
+```{r edu-split}
+set.seed(123)  # Set a seed for reproducibility
+
+# Create empty lists to hold training and testing sets
+edu_train_list <- list()
+edu_test_list <- list()
+
+# Create 5 different splits
+for (i in 1:5) {
+  # Make indices for 70% training
+  train_indices <- createDataPartition(edu_processed$GRADE, p = 0.7, list = FALSE)
+  
+  # Split the data
+  train_data <- edu_processed[train_indices, ]
+  test_data <- edu_processed[-train_indices, ]
+  
+  # Save them
+  edu_train_list[[i]] <- train_data
+  edu_test_list[[i]] <- test_data
+}
+
+```
+
+### Step 2: Train/Test Set Creation
+1. I used createDataPartition() to create 5 different random training/test splits.
+2. Each split used 70% of the data for training and 30% for testing.
+3. I saved the splits in edu_train_list and edu_test_list for later use.
+
+## Step 3: Training the Models
+Plan:
+1. Train SVM models with different kernels (linear, polynomial, radial) for each split.
+2. Predict on the corresponding test set
+3. Record the accuracy for each model
+```{r edu-train}
+# Create a results data frame to store accuracies
+edu_results <- data.frame(
+  Split = integer(),
+  Kernel = character(),
+  Accuracy = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Train and evaluate models for each split
+for (i in 1:5) {
+  train_data <- edu_train_list[[i]]
+  test_data <- edu_test_list[[i]]
+  
+  # 1. Linear kernel
+  svm_linear <- svm(GRADE ~ ., data = train_data, kernel = "linear")
+  pred_linear <- predict(svm_linear, newdata = test_data)
+  acc_linear <- mean(pred_linear == test_data$GRADE)
+  edu_results <- rbind(edu_results, data.frame(Split = i, Kernel = "Linear", Accuracy = acc_linear))
+  
+  # 2. Polynomial kernel
+  svm_poly <- svm(GRADE ~ ., data = train_data, kernel = "polynomial")
+  pred_poly <- predict(svm_poly, newdata = test_data)
+  acc_poly <- mean(pred_poly == test_data$GRADE)
+  edu_results <- rbind(edu_results, data.frame(Split = i, Kernel = "Polynomial", Accuracy = acc_poly))
+  
+  # 3. Radial kernel
+  svm_rbf <- svm(GRADE ~ ., data = train_data, kernel = "radial")
+  pred_rbf <- predict(svm_rbf, newdata = test_data)
+  acc_rbf <- mean(pred_rbf == test_data$GRADE)
+  edu_results <- rbind(edu_results, data.frame(Split = i, Kernel = "RBF", Accuracy = acc_rbf))
+}
+
+# View the results
+print(edu_results)
+```
+
+### Step 4: Kernel Selection
+1. Kernels: (linear, polynomial, radial) evaluated across five train/test splits.
+The polynomial kernel achieved the highest or tied-for-highest accuracy in most splits.
+Based on these evaluations, the polynomial kernel is best for parameter tuning and final evaluation.
+
+## Step 5: Tuning the Polynomial Kernel
+Details:
+1. Chose the first training set for tuning.
+2. Tuned the polynomial kernel using a grid search for cost, gamma, and degree.
+```{r edu-tune}
+# Pick first training set
+train_data <- edu_train_list[[1]]
+
+# Tune the polynomial kernel
+set.seed(123)  # For reproducibility
+
+tune_out <- tune(
+  svm,
+  GRADE ~ .,
+  data = train_data,
+  kernel = "polynomial",
+  ranges = list(
+    cost = c(0.01, 0.1, 1, 10),
+    gamma = c(0.001, 0.01, 0.1, 1),
+    degree = c(2, 3, 4)
+  )
+)
+
+# View tuning results
+summary(tune_out)
+```
+
+### Step 5: Parameter Tuning
+Step 5: Parameter Tuning -> 10-fold cross-validation
+Parameters tuned: cost, gamma, and degree.
+Explored:
+    cost: 0.01, 0.1, 1, 10
+    gamma: 0.001, 0.01, 0.1, 1
+    degree: 2, 3, 4
+Best parameters found:
+    cost = 0.1
+    gamma = 0.1
+    degree = 3
+
+Best cross-validation error: ~75.18%.
+
+## Step 6: Final Model Evaluation
+Plan:
+For each split
+Train a polynomial SVM with the best parameters (cost = 0.1, gamma = 0.1, degree = 3)
+Predict on the test set, and record the final accuracy for each split.
+```{r edu-final-eval}
+# Create a final results data frame
+edu_final_results <- data.frame(
+  Split = integer(),
+  Accuracy = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Final evaluation across all 5 splits
+for (i in 1:5) {
+  train_data <- edu_train_list[[i]]
+  test_data <- edu_test_list[[i]]
+  
+  # Train polynomial SVM with best parameters
+  svm_final <- svm(
+    GRADE ~ ., 
+    data = train_data,
+    kernel = "polynomial",
+    cost = 0.1,
+    gamma = 0.1,
+    degree = 3
+  )
+  
+  # Predict on the test set
+  predictions <- predict(svm_final, newdata = test_data)
+  
+  # Calculate accuracy
+  acc <- mean(predictions == test_data$GRADE)
+  
+  # Save results
+  edu_final_results <- rbind(edu_final_results, data.frame(Split = i, Accuracy = acc))
+}
+
+# View the final results
+print(edu_final_results)
+```
+
+### Step 6: Evaluation and Analysis
+The final models were trained on each of the 5 training/test splits using the tuned polynomial SVM (parameters: cost = 0.1, gamma = 0.1, degree = 3).
+
+Final test set accuracies for each split were:
+Split	Accuracy
+1	26.83%
+2	24.39%
+3	24.39%
+4	26.83%
+5	29.27%
+
+The average final test set accuracy across all splits was approximately 26%.
+
+## Conclusion
+I explored the use of Support Vector Machines (SVMs) with different kernels 
+(linear, polynomial, and radial) to classify student performance based on various 
+academic and demographic features. After evaluating models across five training/test 
+splits, the polynomial kernel was selected as the best-performing option.
+
+Using parameter tuning, the best polynomial SVM was found with parameters: 
+cost = 0.1, gamma = 0.1, and degree = 3. 
+Final evaluation across all five data splits resulted in test accuracies ranging 
+from approximately 24% to 29%, with an overall average accuracy of about 26%.
+
+While the tuned polynomial SVM showed slightly better performance than random guessing, 
+the overall accuracy suggests that the dataset presents challenges for classification. 
+Possible factors impacting performance include:
+- Limited predictive power in the available features
+- Potential imbalance or noise in the dataset
+
+For future work, improvements could involve:
+- Engineering more informative features
+- Trying alternative models like decision trees and random forests
+- Balancing the classes if severe class imbalance exists
+
